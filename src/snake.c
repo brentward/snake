@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include "controller.h"
 #include "homespun_font.h"
 
@@ -25,6 +26,9 @@
 #define BOARD_MARGIN_X 110
 #define BOARD_MARGIN_Y 80
 #define BOARDER_COLOR BLUE
+#define GAME_OVER_DELAY 64
+#define HUD_X 30
+#define HUD_Y HEIGHT - 30
 
 #define SNAKE_BASE 5
 #define SNAKE_MAX 32
@@ -42,8 +46,8 @@ void draw_char(char c, int16_t x, int16_t y, uint8_t color) {
     } else {
         c -= ' ';
     }
-    for (j=0; j<CHAR_WIDTH; j++)  {
-        for (i=0; i<CHAR_HEIGHT; i++) {
+    for (j=0; j<CHAR_WIDTH; ++j)  {
+        for (i=0; i<CHAR_HEIGHT; ++i) {
 
             if (font[c][j] & (1<<i)) {
                 draw_pixel(x+j, y+i, color);
@@ -66,9 +70,16 @@ void draw_string(const char* str, int16_t x, int16_t y, uint8_t color) {
 }
 
 static void wait() {
+    uint8_t in_byte = 0;
+
     while (true) {
+        if (RIA_RX_READY) {
+            in_byte = RIA_RX;
+        } else {
+            in_byte = 0;
+        }
         controller_read();
-        if (!(controller_buttons & STA_UNPRESSED)) {
+        if ((!(controller_buttons & STA_UNPRESSED)) || in_byte == ' ') {
             delay();
             delay();
             delay();
@@ -76,6 +87,13 @@ static void wait() {
             break;
         }
 
+    }
+}
+
+static void long_delay() {
+    uint8_t i;
+    for (i = 0; i <= GAME_OVER_DELAY; ++i) {
+        delay();
     }
 }
 
@@ -130,35 +148,31 @@ static void clear(uint8_t color) {
 
 }
 
-static void game_over(bool won) {
-    uint8_t color;
-    if (won) {
-        color = GREEN;
-    } else {
-        color = RED;
-    }
-    clear(color);
-    while (true) {
-        controller_read();
-        if (!(controller_buttons & STA_UNPRESSED))
-        {
-            delay();
-            delay();
-            delay();
-            delay();
-            main();
-        }
-    }
+void update_hud(uint8_t level, uint8_t color) {
+    int buff_len = 3;
+
+    char *level_string = (char*)malloc(buff_len * sizeof(char));
+
+    sprintf(level_string, "%d", level + 1);
+    
+    draw_string(level_string, HUD_X + 49, HUD_Y, color);
+    free(level_string);
+}
+
+void draw_hud(uint8_t level, uint8_t color) {
+    draw_string("Level:", HUD_X, HUD_Y, color);
+    update_hud(level, color);
 }
 
 void main() {
-    int16_t velocity_x = 1, velocity_y =0 ;
+    int16_t velocity_x = 1, velocity_y = 0 ;
     int16_t pixel_x = (rand16() % (WIDTH - (2 * BOARD_MARGIN_X) - 1)) + BOARD_MARGIN_X + 1;
     int16_t pixel_y = (rand16() % (HEIGHT - (2 * BOARD_MARGIN_Y) - 1)) + BOARD_MARGIN_Y + 1;
     const uint8_t snake_color = GREEN;
     const uint8_t bg_color = BLACK;
     const uint8_t food_color = YELLOW;
     uint16_t last_buttons = 0xFFFF;
+    char in_byte = 0;
     bool paused = false;
     uint8_t level = 0;
     uint8_t head = 31;
@@ -211,11 +225,12 @@ void main() {
     #endif
     clear(bg_color);
     draw_string("Snake", 140, 100, GREEN);
-    draw_string("press start", 120, 140, GREY);
+    draw_string("press start or space", 90, 140, GREY);
 
     wait();
     clear(bg_color);
     draw_border(BOARDER_COLOR);
+    draw_hud(level, GREEN);
     tail = head - level - SNAKE_BASE;
     for (i = 0; i <= level + SNAKE_BASE; ++i) {
         pixel_index = (head - i) % SNAKE_MAX;
@@ -226,8 +241,15 @@ void main() {
 
     while (true) {
         controller_read();
-        if (((last_buttons & STA_UNPRESSED) != (controller_buttons & STA_UNPRESSED))
-        && !(controller_buttons & STA_UNPRESSED)) {
+        if (RIA_RX_READY) {
+            in_byte = RIA_RX & 0b11011111;
+        } else {
+            in_byte = 0;
+        }
+
+        if ((((last_buttons & STA_UNPRESSED) != (controller_buttons & STA_UNPRESSED))
+        && !(controller_buttons & STA_UNPRESSED))
+        || in_byte == ' ') {
             paused = !paused;
             delay();
             delay();
@@ -235,19 +257,19 @@ void main() {
             delay();
         }
         if (!paused) {
-            if (!(controller_buttons & UP_UNPRESSED) && velocity_y != 1) {
+            if ((!(controller_buttons & UP_UNPRESSED)|| in_byte == 'W') && velocity_y != 1) {
                 velocity_x = 0;
                 velocity_y = -1;
             }
-            if (!(controller_buttons & DN_UNPRESSED) && velocity_y != -1) {
+            if ((!(controller_buttons & DN_UNPRESSED) || in_byte == 'S') && velocity_y != -1) {
                 velocity_x = 0;
                 velocity_y = 1;
             }
-            if (!(controller_buttons & LT_UNPRESSED) && velocity_x != 1) {
+            if ((!(controller_buttons & LT_UNPRESSED) || in_byte == 'A') && velocity_x != 1) {
                 velocity_x = -1;
                 velocity_y = 0;
             }
-            if (!(controller_buttons & RT_UNPRESSED) && velocity_x != -1) {
+            if ((!(controller_buttons & RT_UNPRESSED) || in_byte == 'D') && velocity_x != -1) {
                 velocity_x = 1;
                 velocity_y = 0;
             }
@@ -261,23 +283,23 @@ void main() {
                 || snake_x[next_head] >= WIDTH - BOARD_MARGIN_X
                 || snake_y[next_head] >= HEIGHT - BOARD_MARGIN_Y) {
                     draw_pixel(snake_x[tail], snake_y[tail], bg_color);
-                    for (i = 0; i <= level + SNAKE_BASE; ++i) {
-                        pixel_index = (head - i) % SNAKE_MAX;
-                        draw_pixel(snake_x[pixel_index], snake_y[pixel_index], RED);
-                    }
+                    // for (i = 0; i <= level + SNAKE_BASE; ++i) {
+                    //     pixel_index = (head - i) % SNAKE_MAX;
+                    //     draw_pixel(snake_x[pixel_index], snake_y[pixel_index], RED);
+                    // }
                     draw_string("Try again", 130, 100, RED);
-                    wait();
+                    long_delay();
                     main();
                 }
                 RIA_ADDR0 = (snake_x[next_head] / 2) + (snake_y[next_head] * (WIDTH / 2));
                 if (((RIA_RW0 >> ((snake_x[next_head] % 2) * 4)) & COLOR_MASK) == snake_color) {
                     draw_pixel(snake_x[tail], snake_y[tail], bg_color);
-                    for (i = 0; i <= level + SNAKE_BASE; ++i) {
-                        pixel_index = (head - i) % SNAKE_MAX;
-                        draw_pixel(snake_x[pixel_index], snake_y[pixel_index], RED);
-                    }
+                    // for (i = 0; i <= level + SNAKE_BASE; ++i) {
+                    //     pixel_index = (head - i) % SNAKE_MAX;
+                    //     draw_pixel(snake_x[pixel_index], snake_y[pixel_index], RED);
+                    // }
                     draw_string("Try again", 130, 100, RED);
-                    wait();
+                    long_delay();
                     main();
                 }
                 RIA_RW0 &= ~(COLOR_MASK << ((snake_x[next_head] % 2) * 4));
@@ -287,11 +309,13 @@ void main() {
                     pixel_y = (rand16() % (HEIGHT - (2 * BOARD_MARGIN_Y) - 1)) + BOARD_MARGIN_Y + 1;
                     if (level == 25) {
                         draw_string("Good Job", 130, 100, GREEN);
-                        wait();
+                        long_delay();
                         main();
                     } else {
                         draw_pixel(pixel_x, pixel_y, food_color);
+                        update_hud(level, bg_color);
                         level += 1;
+                        update_hud(level, GREEN);
                     }
                 } else {
                     draw_pixel(snake_x[tail], snake_y[tail], bg_color);
